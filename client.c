@@ -1,27 +1,45 @@
 #include <stdio.h> 
 #include <string.h> 
+#include <stdlib.h>
+#include <stdbool.h>
 #include <sys/socket.h> 
 #include <arpa/inet.h> 
 #include <unistd.h> 
 
 // Constants
-#define TRUE 1
-#define FALSE 0
-#define MESSAGE_SIZE 500
+#define SOCKET_ERROR -1
+#define ERROR 1
+#define MESSAGE_SIZE 1024
 #define PORT 8081
 
 int main(int argc, char* argv[]) {
+    // Declare variables
+    char clientMessage[MESSAGE_SIZE]; // Holds file data to be sent
+    char* file_path = "/Users/steven/Documents/Year-4/Systems-Software/Assignment2/";
+    char* file_name = argv[1];
+    char* save_path = argv[2];
+
+    // Check for correct number of command line args
+    if(argc != 3) {
+        puts("Error: Incorrect number of args");
+        puts("Usage: ./client file_name file_path");
+
+        return ERROR;
+    }
+
     // Initialise client variables
     int SID; 
     struct sockaddr_in server;
-    char clientMessage[MESSAGE_SIZE];
     char serverMessage[MESSAGE_SIZE];
 
     // Create a socket 
     SID = socket(AF_INET, SOCK_STREAM, 0);
     
-    if(SID == -1) {
+    // Check if socket created successfully
+    if(SID == SOCKET_ERROR) {
         puts("Could not create socket");
+
+        return ERROR;
     } else {
         puts("Socket created successfully");
     }
@@ -35,34 +53,76 @@ int main(int argc, char* argv[]) {
     if(connect(SID, (struct sockaddr *)&server, sizeof(server)) < 0) {
         puts("Connection failed");
 
-        return 1;
+        return ERROR;
     }
 
     puts("Successfully connected to server");
 
-    // Communicate with server
-    while(TRUE) {
-        puts("Enter message: ");
-        scanf("%s", clientMessage);
-        
-        // Send data
-        if(send(SID, clientMessage, strlen(clientMessage), 0) < 0) {
-            puts("Sending data failed");
+    char* fs_name = (char *) malloc(1 + strlen(file_path) + strlen (file_name));
+    
+    // Create filename and path to retrieve file
+    strcpy(fs_name, file_path);
+    strcat(fs_name, file_name);
 
-            return 1;
-        }
+    printf("Sending %s to the %s directory on the server...\n", file_name, save_path);
 
-        // Receive reply from server
-        if(recv(SID, serverMessage, MESSAGE_SIZE, 0) < 0) {
-            puts("I/O error");
-            
-            break;
-        } 
+    // Copy file name and path to message
+    bzero(clientMessage, MESSAGE_SIZE);
+    strcpy(clientMessage, file_name);
 
-        puts("\nServer sent: ");
-        puts(serverMessage);
+    // Send filename to be saved to server and check if it sends correctly
+    if(send(SID, clientMessage, sizeof(clientMessage), 0) == SOCKET_ERROR) {
+        fprintf(stderr, "ERROR: Failed to send file %s\n", fs_name);
+
+        return ERROR;
     }
 
+    // Copy file name and path to message
+    bzero(clientMessage, MESSAGE_SIZE);
+    strcpy(clientMessage, save_path);
+
+    // Send path to save to server and check if it sends correctly
+    if(send(SID, clientMessage, sizeof(clientMessage), 0) == SOCKET_ERROR) {
+        fprintf(stderr, "ERROR: Failed to send path %s\n", save_path);
+
+        return ERROR;
+    }
+
+    // Open the file in read mode
+    FILE* fs = fopen(file_name, "r");
+
+    // Check file opened correctly
+    if(fs == NULL) {
+        printf ("ERROR: File %s not found\n", fs_name);
+        
+        return ERROR;
+    }
+
+    bzero(clientMessage, MESSAGE_SIZE);
+
+    // Get data from the file
+    while((fgets(clientMessage, MESSAGE_SIZE, fs)) != NULL) {
+        // Send the data to the server
+        if(send(SID, clientMessage, sizeof(clientMessage), 0) == SOCKET_ERROR) {
+            fprintf(stderr, "ERROR: Failed to send file %s\n", fs_name);
+
+            return ERROR;
+        }
+
+        bzero(clientMessage, MESSAGE_SIZE);
+    }
+
+    puts("File sent successfully");
+
+    // Receive reply from server
+    bzero(serverMessage, MESSAGE_SIZE);
+    if(recv(SID, serverMessage, MESSAGE_SIZE, 0) < 0) {
+        puts("I/O error");
+        
+        return ERROR;
+    } 
+
+    printf("Server sent: %s", serverMessage);
     close(SID);
 
     return 0;
