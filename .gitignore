@@ -51,6 +51,7 @@ Module.symvers
 Mkfile.old
 dkms.conf
 
-# Word docs
+# Word docs and pdfs
 *.docx
 *.doc
+*.pdf
