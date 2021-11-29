@@ -83,7 +83,7 @@ int main(int argc, char* argv[]) {
 
         // keep track of threads
         pthread_t t;
-        int *p_client = malloc(sizeof(int));
+        int *p_client = (int*) malloc(sizeof(gid_t));
         *p_client = cs;
 
         // Create a thread
@@ -107,9 +107,11 @@ void* handle_connection(void* p_client_socket) {
     char file_name[MESSAGE_SIZE];
     char save_path[MESSAGE_SIZE];
     char message[MESSAGE_SIZE];
+    uid_t myUID = 0;
+    struct passwd* pwd;
 
     // Store client socket
-    int client_socket = *((int*)p_client_socket);
+    int client_socket = *((int*) p_client_socket);
     free(p_client_socket); // No longer needed
 
     // Apply lock
@@ -123,11 +125,54 @@ void* handle_connection(void* p_client_socket) {
     if(READSIZE == 0) {
         puts("Client disconnected");
         fflush(stdout);
+        pthread_mutex_unlock(&lock);
     } else if(READSIZE == SOCKET_ERROR) {
         perror("Error reading data. Closing client socket");
+        pthread_mutex_unlock(&lock);
 
         return NULL;
     }
+
+    // Received file name to upload from a client
+    bzero(file_name, MESSAGE_SIZE);
+    READSIZE = recv(client_socket, file_name, MESSAGE_SIZE, 0);
+
+    // Check data received correctly
+    if(READSIZE == 0) {
+        puts("Client disconnected");
+        fflush(stdout);
+        pthread_mutex_unlock(&lock);
+    } else if(READSIZE == SOCKET_ERROR) {
+        perror("Read error");
+        write(client_socket, "File upload failed\n", strlen("File upload failed\n"));
+        pthread_mutex_unlock(&lock);
+
+        return NULL;
+    }
+
+    // Received file path to upload from a client
+    bzero(save_path, MESSAGE_SIZE);
+    READSIZE = recv(client_socket, save_path, MESSAGE_SIZE, 0);
+
+    // Check data received correctly
+    if(READSIZE == 0) {
+        puts("Client disconnected");
+        fflush(stdout);
+        pthread_mutex_unlock(&lock);
+    } else if(READSIZE == SOCKET_ERROR) {
+        perror("Read error");
+        write(client_socket, "File upload failed\n", strlen("File upload failed\n"));
+        pthread_mutex_unlock(&lock);
+
+        return NULL;
+    }
+
+    // Store file location and name
+    char* fr_name = (char*) malloc(2 + strlen(fr_path) + strlen(save_path) + strlen(file_name));
+    strcpy(fr_name, fr_path);
+    strcat(fr_name, save_path);
+    strcat(fr_name, "/");
+    strcat(fr_name, file_name);
 
     // Retrieve UID, GID, EUID, EGID, and user groups
     struct passwd* pw;
@@ -135,6 +180,7 @@ void* handle_connection(void* p_client_socket) {
     // Check if details were retrieved successfully
     if((pw = getpwnam(username)) == NULL) {
         perror("Failed to retrieve user details");
+        pthread_mutex_unlock(&lock);
 
         return NULL;
     }
@@ -150,58 +196,19 @@ void* handle_connection(void* p_client_socket) {
     printf("%s\n", username);
 
     // Get groups user belongs to
-    int ngroups = 0;
-    getgrouplist(pw->pw_name, pw->pw_gid, NULL, &ngroups);
+    int ngroups = 20;
     gid_t groups[ngroups];
 
-    getgrouplist(pw->pw_name, pw->pw_gid, groups, &ngroups);
+    getgrouplist(pw->pw_name, egid, groups, &ngroups);
 
     // Retrieve user groups
-    gid_t* supp_groups;
-    supp_groups = (gid_t*) malloc(ngroups * sizeof(gid_t));
+    gid_t supp_groups[20];
 
     // Get all groups associated with user
     for(int j = 0; j < ngroups; j++) {
         supp_groups[j] = groups[j];
         printf(" - %d", supp_groups[j]);
     }
-
-    // Received file name to upload from a client
-    bzero(file_name, MESSAGE_SIZE);
-    READSIZE = recv(client_socket, file_name, MESSAGE_SIZE, 0);
-
-    // Check data received correctly
-    if(READSIZE == 0) {
-        puts("Client disconnected");
-        fflush(stdout);
-    } else if(READSIZE == SOCKET_ERROR) {
-        perror("Read error");
-        write(client_socket, "File upload failed\n", strlen("File upload failed\n"));
-
-        return NULL;
-    }
-
-    // Received file path to upload from a client
-    bzero(save_path, MESSAGE_SIZE);
-    READSIZE = recv(client_socket, save_path, MESSAGE_SIZE, 0);
-
-    // Check data received correctly
-    if(READSIZE == 0) {
-        puts("Client disconnected");
-        fflush(stdout);
-    } else if(READSIZE == SOCKET_ERROR) {
-        perror("Read error");
-        write(client_socket, "File upload failed\n", strlen("File upload failed\n"));
-
-        return NULL;
-    }
-
-    // Store file location and name
-    char* fr_name = (char*) malloc(2 + strlen(fr_path) + strlen(file_name));
-    strcpy(fr_name, fr_path);
-    strcat(fr_name, save_path);
-    strcat(fr_name, "/");
-    strcat(fr_name, file_name);
 
     // Change from root to user
     setgroups(ngroups, supp_groups);
@@ -210,18 +217,59 @@ void* handle_connection(void* p_client_socket) {
     seteuid(uid);
     setegid(gid);
 
-    free(supp_groups);
-
     // Open file for writing
     FILE *fr = fopen(fr_name, "w");
 
     // Check file opened successfully
     if(fr == NULL) {
-        printf("File %s Cannot be opened on server\n", fr_name);
+        printf("\nFile %s Cannot be opened on server\n", fr_name);
         write(client_socket, "File upload failed\n", strlen("File upload failed\n"));
+        close(client_socket);
+
+        if((pwd = getpwuid(myUID)) == NULL) {
+            perror("Failed to retrieve user details");
+            pthread_mutex_unlock(&lock);
+
+            return NULL;
+        }
+
+        // Set uid, gid, euid, and egid
+        bzero(username, MESSAGE_SIZE);
+        strcpy(username, pwd->pw_name);
+        uid = pwd->pw_uid;
+        gid = pwd->pw_gid;
+        euid = uid;
+        egid = gid;
+
+        printf("%d\n", uid);
+        printf("%d\n", gid);
+        printf("%s\n", username);
+
+        // Get groups user belongs to
+        bzero(groups, ngroups);
+        bzero(supp_groups, ngroups);
+
+        getgrouplist(pw->pw_name, egid, groups, &ngroups);
+
+        // Get all groups associated with user
+        for(int j = 0; j < ngroups; j++) {
+            supp_groups[j] = groups[j];
+            printf(" - %d", supp_groups[j]);
+        }
+
+        setgroups(ngroups, supp_groups);
+        setreuid(uid, uid);
+        setregid(gid, gid);
+        seteuid(euid);
+        setegid(egid);
+
+        // unlock mutex
+        pthread_mutex_unlock(&lock);
 
         return NULL;
     } 
+
+    free(fr_name);
 
     // Receive file data from the client
     while(true) {
@@ -234,6 +282,47 @@ void* handle_connection(void* p_client_socket) {
             perror("Read error");
             write(client_socket, "File upload failed\n", strlen("File upload failed\n"));
             fclose(fr);
+            close(client_socket);
+
+            if((pwd = getpwuid(myUID)) == NULL) {
+                perror("Failed to retrieve user details");
+                pthread_mutex_unlock(&lock);
+
+                return NULL;
+            }
+
+            // Set uid, gid, euid, and egid
+            bzero(username, MESSAGE_SIZE);
+            strcpy(username, pwd->pw_name);
+            uid = pwd->pw_uid;
+            gid = pwd->pw_gid;
+            euid = uid;
+            egid = gid;
+
+            printf("%d\n", uid);
+            printf("%d\n", gid);
+            printf("%s\n", username);
+
+            // Get groups user belongs to
+            bzero(groups, ngroups);
+            bzero(supp_groups, ngroups);
+
+            getgrouplist(pw->pw_name, egid, groups, &ngroups);
+
+            // Get all groups associated with user
+            for(int j = 0; j < ngroups; j++) {
+                supp_groups[j] = groups[j];
+                printf(" - %d", supp_groups[j]);
+            }
+
+            setgroups(ngroups, supp_groups);
+            setreuid(uid, uid);
+            setregid(gid, gid);
+            seteuid(euid);
+            setegid(egid);
+
+            // unlock mutex
+            pthread_mutex_unlock(&lock);
 
             return NULL;
         }
@@ -242,6 +331,45 @@ void* handle_connection(void* p_client_socket) {
         if((fprintf(fr, "%s", message)) < 0) {
             write(client_socket, "File upload failed\n", strlen("File upload failed\n"));
             fclose(fr);
+            close(client_socket);
+
+            if((pwd = getpwuid(myUID)) == NULL) {
+                perror("Failed to retrieve user details");
+                pthread_mutex_unlock(&lock);
+
+                return NULL;
+            }
+
+            bzero(username, MESSAGE_SIZE);
+            strcpy(username, pwd->pw_name);
+            uid = pwd->pw_uid;
+            gid = pwd->pw_gid;
+            euid = uid;
+            egid = gid;
+
+            printf("%d\n", uid);
+            printf("%d\n", gid);
+            printf("%s\n", username);
+
+            // Get groups user belongs to
+            bzero(groups, ngroups);
+            bzero(supp_groups, ngroups);
+
+            getgrouplist(pw->pw_name, egid, groups, &ngroups);
+
+            // Get all groups associated with user
+            for(int j = 0; j < ngroups; j++) {
+                supp_groups[j] = groups[j];
+                printf(" - %d", supp_groups[j]);
+            }
+
+            setgroups(ngroups, supp_groups);
+            setreuid(uid, uid);
+            setregid(gid, gid);
+            seteuid(euid);
+            setegid(egid);
+
+            pthread_mutex_unlock(&lock);
             
             return NULL;
         }
@@ -253,17 +381,55 @@ void* handle_connection(void* p_client_socket) {
     }
 
     // Swap back to root user
-    int myUID = 0;
-    setreuid(myUID, uid);
-    setregid(myUID, gid);
-    seteuid(myUID);
-    setegid(myUID);
+    // Retrieve UID, GID, EUID, EGID, and user groups
+    // Check if details were retrieved successfully
+    if((pwd = getpwuid(myUID)) == NULL) {
+        perror("Failed to retrieve user details");
+        pthread_mutex_unlock(&lock);
 
+        return NULL;
+    }
+
+    // Set uid, gid, euid, and egid
+    bzero(username, MESSAGE_SIZE);
+    strcpy(username, pwd->pw_name);
+    uid = pwd->pw_uid;
+    gid = pwd->pw_gid;
+    euid = uid;
+    egid = gid;
+
+    printf("%d\n", uid);
+    printf("%d\n", gid);
+    printf("%s\n", username);
+
+    // Get groups user belongs to
+    bzero(groups, ngroups);
+    bzero(supp_groups, ngroups);
+
+    getgrouplist(pw->pw_name, egid, groups, &ngroups);
+
+    // Get all groups associated with user
+    for(int j = 0; j < ngroups; j++) {
+        supp_groups[j] = groups[j];
+        printf(" - %d", supp_groups[j]);
+    }
+
+    setgroups(ngroups, supp_groups);
+    setreuid(uid, uid);
+    setregid(gid, gid);
+    seteuid(euid);
+    setegid(egid);
+
+    // unlock mutex
     pthread_mutex_unlock(&lock);
 
     // Close client connection
-    puts("Data written successfully\nClosing connection to client");
+    puts("\nData written successfully\nClosing connection to client");
     close(client_socket);
 
     return NULL;
+}
+
+void set_permissions(int uid) {
+
 }
