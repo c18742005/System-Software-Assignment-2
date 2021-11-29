@@ -157,7 +157,8 @@ void* handle_connection(void* p_client_socket) {
     getgrouplist(pw->pw_name, pw->pw_gid, groups, &ngroups);
 
     // Retrieve user groups
-    gid_t supp_groups[ngroups];
+    gid_t* supp_groups;
+    supp_groups = (gid_t*) malloc(ngroups * sizeof(gid_t));
 
     // Get all groups associated with user
     for(int j = 0; j < ngroups; j++) {
@@ -208,6 +209,8 @@ void* handle_connection(void* p_client_socket) {
     setregid(gid, egid);
     seteuid(uid);
     setegid(gid);
+
+    free(supp_groups);
 
     // Open file for writing
     FILE *fr = fopen(fr_name, "w");
