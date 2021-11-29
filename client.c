@@ -24,7 +24,7 @@ char clientMessage[MESSAGE_SIZE]; // Holds file data to be sent
 
 int main(int argc, char* argv[]) {
     // Declare variables
-    char* file_path = "/Users/steven/Documents/Year-4/Systems-Software/Assignment2/";
+    char* file_path = "/Users/steven/Documents/Year-4/Systems-Software/Assignment2/Upload/";
     char* file_name = argv[1];
     char* save_path = argv[2];
     struct sockaddr_in server;

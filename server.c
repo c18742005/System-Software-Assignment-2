@@ -97,7 +97,7 @@ int main(int argc, char* argv[]) {
  */
 void* handle_connection(void* p_client_socket) {
     int READSIZE; // size of sockaddr_in for client connection
-    char* fr_path = "/Users/steven/Documents/Year-4/Systems-Software/Assignment2/upload/";
+    char* fr_path = "/Users/steven/Documents/Year-4/Systems-Software/Assignment2/";
     char username[MESSAGE_SIZE];
     char file_name[MESSAGE_SIZE];
     char save_path[MESSAGE_SIZE];
