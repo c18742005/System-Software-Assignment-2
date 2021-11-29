@@ -15,7 +15,6 @@
 #define MESSAGE_SIZE 1024
 #define PORT 8081
 #define SERVER_BACKLOG 50
-#define MAX_GROUPS 30
 
 // Declare functions
 void* handle_connection(void* client_socket);
@@ -43,6 +42,8 @@ int main(int argc, char* argv[]) {
     // Check socket created successfully
     if(s == SOCKET_ERROR) {
         perror("Failed to create socket");
+
+        return ERROR;
     } else {
         puts("Socket created successfully");
     }
@@ -55,6 +56,8 @@ int main(int argc, char* argv[]) {
     // Bind the socket and check it binds successfully
     if(bind(s, (struct sockaddr *)&server, sizeof(server)) < 0) {
         perror("Bind error");
+
+        return ERROR;
     } else {
         puts("Bind complete");
     }
@@ -62,6 +65,8 @@ int main(int argc, char* argv[]) {
     // Listen for a connection
     if(listen(s, SERVER_BACKLOG) < 0) {
         perror("Listen error");
+
+        return ERROR;
     }
 
     // Await connections
@@ -144,27 +149,21 @@ void* handle_connection(void* p_client_socket) {
     printf("%d\n", gid);
     printf("%s\n", username);
 
+    // Get groups user belongs to
+    int ngroups = 0;
+    getgrouplist(pw->pw_name, pw->pw_gid, NULL, &ngroups);
+    gid_t groups[ngroups];
+
+    getgrouplist(pw->pw_name, pw->pw_gid, groups, &ngroups);
+
     // Retrieve user groups
-    gid_t supp_groups[MAX_GROUPS];
-    int ngroups;
-    gid_t *groups;
-
-    ngroups = MAX_GROUPS;
-    groups = malloc(ngroups * sizeof(gid_t)); // Max limit of groups
-
-    // Check group array is large enough
-    if(getgrouplist(username, uid, (int*) groups, &ngroups) == -1) {
-        perror("supp_groups array is too small");
-
-        return NULL;
-    }
+    gid_t supp_groups[ngroups];
 
     // Get all groups associated with user
     for(int j = 0; j < ngroups; j++) {
         supp_groups[j] = groups[j];
         printf(" - %d", supp_groups[j]);
     }
-
 
     // Received file name to upload from a client
     bzero(file_name, MESSAGE_SIZE);
@@ -204,7 +203,7 @@ void* handle_connection(void* p_client_socket) {
     strcat(fr_name, file_name);
 
     // Change from root to user
-    setgroups(MAX_GROUPS, supp_groups);
+    setgroups(ngroups, supp_groups);
     setreuid(uid, euid);
     setregid(gid, egid);
     seteuid(uid);
