@@ -6,15 +6,22 @@
 #include <arpa/inet.h> 
 #include <unistd.h> 
 #include <pthread.h>
+#include <pwd.h>
+#include <grp.h>
 
 // Constants
 #define SOCKET_ERROR -1
+#define ERROR 1
 #define MESSAGE_SIZE 1024
 #define PORT 8081
-#define SERVER_BACKLOG 100
+#define SERVER_BACKLOG 50
+#define MAX_GROUPS 30
 
 // Declare functions
 void* handle_connection(void* client_socket);
+
+// Declare lock
+pthread_mutex_t lock;
 
 int main(int argc, char* argv[]) {
     // Initialise server variables
@@ -23,12 +30,19 @@ int main(int argc, char* argv[]) {
     int connSize; // size of struct
     struct sockaddr_in server, client;
 
+    // Initialise mutext lock for synchronisation
+    if(pthread_mutex_init(&lock, NULL) != 0) {
+        perror("Mutex init failed\n");
+
+        return ERROR;
+    }
+
     // Create a socket 
     s = socket(AF_INET, SOCK_STREAM, 0);
     
     // Check socket created successfully
     if(s == SOCKET_ERROR) {
-        puts("Failed to create socket");
+        perror("Failed to create socket");
     } else {
         puts("Socket created successfully");
     }
@@ -62,31 +76,95 @@ int main(int argc, char* argv[]) {
             puts("Connection from client accepted");
         }
 
-        // keep track of thread
+        // keep track of threads
         pthread_t t;
         int *p_client = malloc(sizeof(int));
         *p_client = cs;
 
-        // Create the thread
+        // Create a thread
         pthread_create(&t, NULL, handle_connection, p_client);
+        pthread_join(t, NULL);
     }
+
+    // Destroy the lock on completion
+    pthread_mutex_destroy(&lock);
 
     return 0;
 }
 
 /**
- * Function that handles client multiple client connections to the server
+ * Function that handles multiple client connections to the server
  */
 void* handle_connection(void* p_client_socket) {
     int READSIZE; // size of sockaddr_in for client connection
     char* fr_path = "/Users/steven/Documents/Year-4/Systems-Software/Assignment2/upload/";
+    char username[MESSAGE_SIZE];
     char file_name[MESSAGE_SIZE];
     char save_path[MESSAGE_SIZE];
     char message[MESSAGE_SIZE];
 
     // Store client socket
     int client_socket = *((int*)p_client_socket);
-    free(p_client_socket); // no longer needed
+    free(p_client_socket); // No longer needed
+
+    // Apply lock
+    pthread_mutex_lock(&lock);
+
+    // Received user name to upload from a client
+    bzero(username, MESSAGE_SIZE);
+    READSIZE = recv(client_socket, username, MESSAGE_SIZE, 0);
+
+    // Check data received correctly
+    if(READSIZE == 0) {
+        puts("Client disconnected");
+        fflush(stdout);
+    } else if(READSIZE == SOCKET_ERROR) {
+        perror("Error reading data. Closing client socket");
+
+        return NULL;
+    }
+
+    // Retrieve UID, GID, EUID, EGID, and user groups
+    struct passwd* pw;
+
+    // Check if details were retrieved successfully
+    if((pw = getpwnam(username)) == NULL) {
+        perror("Failed to retrieve user details");
+
+        return NULL;
+    }
+
+    // Set uid, gid, euid, and egid
+    uid_t uid = pw->pw_uid;
+    gid_t gid = pw->pw_gid;
+    uid_t euid = uid;
+    gid_t egid = gid;
+
+    printf("%d\n", uid);
+    printf("%d\n", gid);
+    printf("%s\n", username);
+
+    // Retrieve user groups
+    gid_t supp_groups[MAX_GROUPS];
+    int ngroups;
+    gid_t *groups;
+
+    ngroups = MAX_GROUPS;
+    groups = malloc(ngroups * sizeof(gid_t)); // Max limit of groups
+
+    // Check group array is large enough
+    if(getgrouplist(username, uid, (int*) groups, &ngroups) == -1) {
+        perror("supp_groups array is too small");
+
+        return NULL;
+    }
+
+    // Get all groups associated with user
+    for(int j = 0; j < ngroups; j++) {
+        supp_groups[j] = groups[j];
+        printf(" - %d", supp_groups[j]);
+    }
+
 
     // Received file name to upload from a client
     bzero(file_name, MESSAGE_SIZE);
@@ -125,6 +203,13 @@ void* handle_connection(void* p_client_socket) {
     strcat(fr_name, "/");
     strcat(fr_name, file_name);
 
+    // Change from root to user
+    setgroups(MAX_GROUPS, supp_groups);
+    setreuid(uid, euid);
+    setregid(gid, egid);
+    seteuid(uid);
+    setegid(gid);
+
     // Open file for writing
     FILE *fr = fopen(fr_name, "w");
 
@@ -146,6 +231,7 @@ void* handle_connection(void* p_client_socket) {
         } else if(READSIZE == SOCKET_ERROR) {
             perror("Read error");
             write(client_socket, "File upload failed\n", strlen("File upload failed\n"));
+            fclose(fr);
 
             return NULL;
         }
@@ -153,6 +239,9 @@ void* handle_connection(void* p_client_socket) {
         // Store data in file and check it stored correctly
         if((fprintf(fr, "%s", message)) < 0) {
             write(client_socket, "File upload failed\n", strlen("File upload failed\n"));
+            fclose(fr);
+            
+            return NULL;
         }
 
         // Close file and update user on success
@@ -160,6 +249,15 @@ void* handle_connection(void* p_client_socket) {
         write(client_socket, "File uploaded successfully\n", strlen("File uploaded successfully\n"));
         bzero(message, MESSAGE_SIZE);
     }
+
+    // Swap back to root user
+    int myUID = 0;
+    setreuid(myUID, uid);
+    setregid(myUID, gid);
+    seteuid(myUID);
+    setegid(myUID);
+
+    pthread_mutex_unlock(&lock);
 
     // Close client connection
     puts("Data written successfully\nClosing connection to client");
