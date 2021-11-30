@@ -103,21 +103,17 @@ int main(int argc, char* argv[]) {
  */
 void* handle_connection(void* p_client_socket) {
     int READSIZE; // size of sockaddr_in for client connection
-    char* fr_path = "/var/www/html/Assignment2/";
+    char* fr_path = "/var/www/html/Assignment2/"; // path to manufacturing and distribution directories
     char username[MESSAGE_SIZE];
     char file_name[MESSAGE_SIZE];
     char save_path[MESSAGE_SIZE];
     char message[MESSAGE_SIZE];
 
-    // Store client socket
+    // Store client socket and free memory
     int client_socket = *((int*) p_client_socket);
-    free(p_client_socket); // No longer needed
+    free(p_client_socket); 
 
-    // Apply lock
-    printf("\nApplying lock");
-    pthread_mutex_lock(&lock);
-
-    // Received user name to upload from a client
+    // Get usernam of user
     bzero(username, MESSAGE_SIZE);
     READSIZE = recv(client_socket, username, MESSAGE_SIZE, 0);
 
@@ -126,15 +122,10 @@ void* handle_connection(void* p_client_socket) {
         puts("Client disconnected");
         fflush(stdout);
 
-        //Remove mutex lock
-        printf("\nRemoving lock");
-        pthread_mutex_unlock(&lock);
     } else if(READSIZE == SOCKET_ERROR) {
         perror("Error reading data. Closing client socket");
-
-        //Remove mutex lock
-        printf("\nRemoving lock");
-        pthread_mutex_unlock(&lock);
+        write(client_socket, "Failed to retrieve user details\n", strlen("Failed to retrieve user details\n"));
+		close(client_socket);
 
         return NULL;
     }
@@ -148,16 +139,10 @@ void* handle_connection(void* p_client_socket) {
         puts("Client disconnected");
         fflush(stdout);
 
-        //Remove mutex lock
-        printf("\nRemoving lock");
-        pthread_mutex_unlock(&lock);
     } else if(READSIZE == SOCKET_ERROR) {
         perror("Read error");
-        write(client_socket, "File upload failed\n", strlen("File upload failed\n"));
-
-        //Remove mutex lock
-        printf("\nRemoving lock");
-        pthread_mutex_unlock(&lock);
+        write(client_socket, "Failed to retrieve file name to store\n", strlen("Failed to retrieve file name to store\n"));
+		close(client_socket);
 
         return NULL;
     }
@@ -171,15 +156,10 @@ void* handle_connection(void* p_client_socket) {
         puts("Client disconnected");
         fflush(stdout);
 
-        printf("\nRemoving lock");
-        pthread_mutex_unlock(&lock);
     } else if(READSIZE == SOCKET_ERROR) {
         perror("Read error");
-        write(client_socket, "File upload failed\n", strlen("File upload failed\n"));
-
-        //Remove mutex lock
-        printf("\nRemoving lock");
-        pthread_mutex_unlock(&lock);
+        write(client_socket, "Failed to retrieve file path\n", strlen("Failed to retrieve file path\n"));
+		close(client_socket);
 
         return NULL;
     }
@@ -190,7 +170,12 @@ void* handle_connection(void* p_client_socket) {
     strcat(fr_name, save_path);
     strcat(fr_name, "/");
     strcat(fr_name, file_name);
+
+    // Apply lock
+    puts("\nApplying lock to create and store file on server");
+    pthread_mutex_lock(&lock);
     
+    // Fork process to create a file on users behalf
     pid_t pid;
     pid = fork();
     
@@ -201,7 +186,9 @@ void* handle_connection(void* p_client_socket) {
 		// Check if details were retrieved successfully
 		if((pw = getpwnam(username)) == NULL) {
 		    perror("Failed to retrieve user details");
-
+            write(client_socket, "Failed to retrieve user details\n", strlen("Failed to retrieve user details\n"));
+		    close(client_socket);
+            
             //Remove mutex lock
             printf("\nRemoving lock");
 		    pthread_mutex_unlock(&lock);
@@ -224,6 +211,8 @@ void* handle_connection(void* p_client_socket) {
         // Get groups user is a part of and check they were retrieved correctly
 		if(getgrouplist(pw->pw_name, uid, groups, &ngroups) == -1) {
 			perror("ngroups is too small");
+            write(client_socket, "Failed to retrieve user groups\n", strlen("Failed to retrieve user groups\n"));
+		    close(client_socket);
 
             //Remove mutex lock
             printf("\nRemoving lock");
@@ -259,7 +248,7 @@ void* handle_connection(void* p_client_socket) {
 		// Check file opened successfully
 		if(fr == NULL) {
 		    printf("\nFile %s Cannot be opened on server\n", fr_name);
-		    write(client_socket, "File upload failed\n", strlen("File upload failed\n"));
+		    write(client_socket, "File could not be stored on server\n", strlen("File could not be stored on server\n"));
 		    close(client_socket);
 
             //Remove mutex lock
@@ -269,6 +258,7 @@ void* handle_connection(void* p_client_socket) {
 		    return NULL;
 		} 
 
+        // Free memory no longer needed
 		free(fr_name);
 
 		// Receive file data from the client
@@ -279,10 +269,10 @@ void* handle_connection(void* p_client_socket) {
 		    if(READSIZE == 0) {
 		        break;
 		    } else if(READSIZE == SOCKET_ERROR) {
-		        perror("Read error");
-		        write(client_socket, "File upload failed\n", strlen("File upload failed\n"));
-		        fclose(fr);
+		        perror("Error reading data");
+		        write(client_socket, "File upload failed. Error reading data\n", strlen("File upload failed. Error reading data\n"));
 		        close(client_socket);
+                fclose(fr);
 
 		        //Remove mutex lock
                 printf("\nRemoving lock");
@@ -293,9 +283,10 @@ void* handle_connection(void* p_client_socket) {
 
 		    // Store data in file and check if stored correctly
 		    if((fprintf(fr, "%s", message)) < 0) {
-		        write(client_socket, "File upload failed\n", strlen("File upload failed\n"));
-		        fclose(fr);
+                perror("Error writing to file");
+		        write(client_socket, "File upload failed. Error creating file on server\n", strlen("File upload failed. Error creating file on server\n"));
 		        close(client_socket);
+                fclose(fr);
 
                 //Remove mutex lock
                 printf("\nRemoving lock");
