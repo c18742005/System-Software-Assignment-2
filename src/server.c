@@ -14,15 +14,22 @@
 #define SOCKET_ERROR -1
 #define ERROR 1
 #define MESSAGE_SIZE 1024
-#define PORT 8081
+#define PORT 8888
 #define SERVER_BACKLOG 50
 
 // Declare functions
 void* handle_connection(void* client_socket);
+void send_display_error(char* err, char* data, int cs);
 
 // Declare lock
 pthread_mutex_t lock;
 
+/**
+ * Main driver function of the server
+ * Creates a server, binds, listens, and awaits for client connections
+ * Handles the creation of threads for multithreading capabilites
+ * Calls the handle_connection function to handle multiple connections
+ */
 int main(int argc, char* argv[]) {
     // Initialise server variables
     int s; // socket descriptor 
@@ -87,7 +94,7 @@ int main(int argc, char* argv[]) {
         int *p_client = (int*) malloc(sizeof(gid_t));
         *p_client = cs;
 
-        // Create a thread
+        // Create a thread and handle it
         pthread_create(&t, NULL, handle_connection, p_client);
         pthread_join(t, NULL);
     }
@@ -103,17 +110,17 @@ int main(int argc, char* argv[]) {
  */
 void* handle_connection(void* p_client_socket) {
     int READSIZE; // size of sockaddr_in for client connection
-    char* fr_path = "/var/www/html/Assignment2/"; // path to manufacturing and distribution directories
-    char username[MESSAGE_SIZE];
-    char file_name[MESSAGE_SIZE];
-    char save_path[MESSAGE_SIZE];
-    char message[MESSAGE_SIZE];
+    char* fr_path = "/var/www/html/Assignment2/server-files/"; // path to manufacturing and distribution directories
+    char username[MESSAGE_SIZE]; // Stores username of client
+    char file_name[MESSAGE_SIZE]; // Stores file name to be uploaded
+    char save_path[MESSAGE_SIZE]; // Stores path to save file to
+    char message[MESSAGE_SIZE]; // Stores messages to be sent to user
 
-    // Store client socket and free memory
+    // Store client socket passed by main and free memory
     int client_socket = *((int*) p_client_socket);
     free(p_client_socket); 
 
-    // Get username of user
+    // Get username of wishing to upload file
     bzero(username, MESSAGE_SIZE);
     READSIZE = recv(client_socket, username, MESSAGE_SIZE, 0);
 
@@ -128,7 +135,7 @@ void* handle_connection(void* p_client_socket) {
         return NULL;
     }
 
-    // Get file name to upload from a client
+    // Get file name to upload from the user
     bzero(file_name, MESSAGE_SIZE);
     READSIZE = recv(client_socket, file_name, MESSAGE_SIZE, 0);
 
@@ -158,145 +165,145 @@ void* handle_connection(void* p_client_socket) {
         return NULL;
     }
 
-    // Store file location and name
+    // Create path to save file to
     char* fr_name = (char*) malloc(2 + strlen(fr_path) + strlen(save_path) + strlen(file_name));
     strcpy(fr_name, fr_path);
     strcat(fr_name, save_path);
     strcat(fr_name, "/");
     strcat(fr_name, file_name);
-
-    // Apply lock
-    puts("\nApplying lock to create and store file on server");
-    pthread_mutex_lock(&lock);
     
-    // Fork process to create a file on users behalf
+    // Fork process to create a file on the users behalf
     pid_t pid;
     pid = fork();
     
     // Child process: Perform file creation on users behalf
     if(pid == 0) {
-		if(write_server_file(username, fr_name, message, client_socket) == ERROR) {
-            //Remove mutex lock
-            printf("\nRemoving lock");
+		// Apply lock
+		puts("\nApplying lock to create and store file on server\n");
+		pthread_mutex_lock(&lock);
+		
+		struct passwd* pw;
+
+		// Check if details were retrieved successfully
+		if((pw = getpwnam(username)) == NULL) {
+		    send_display_error("Failed to retrieve user details", "Failed to retrieve user details\nFile upload failed\n", client_socket);
+
+		    return NULL;
+		}
+
+		// Get groups user belongs to
+		int ngroups = 50;
+
+		// Retrieve user groups
+		gid_t *supp_groups;
+		gid_t *groups;
+		groups = (gid_t*) malloc(ngroups * sizeof(gid_t));
+		supp_groups = (gid_t*) malloc(ngroups * sizeof(gid_t));
+
+		// Retrieve UID of user
+		uid_t uid = pw->pw_uid;
+
+		// Get groups user is a part of and check they were retrieved correctly
+		if(getgrouplist(pw->pw_name, uid, groups, &ngroups) == -1) {
+		    send_display_error("ngroups is too small", "Failed to retrieve user groups.\nFile upload failed\n", client_socket);
+		    printf("\nRemoving lock\n");
             pthread_mutex_unlock(&lock);
 
-            return NULL;
-        };
+		    return NULL;
+		}
+
+		// Get all groups associated with user
+		for(int j = 0; j < ngroups; j++) {
+		    supp_groups[j] = groups[j];
+		}
+		
+		// Set gid, euid, and egid
+		gid_t gid = pw->pw_gid;
+		uid_t euid = uid;
+		gid_t egid = gid;
+
+		printf("Creating file on behalf of %s\n", username);
+		printf("UID: %d\n", uid);
+		printf("GID: %d\n", gid);
+
+		// Change from root to user
+		setgroups(ngroups, supp_groups);
+		setreuid(uid, uid);
+		setregid(uid, gid);
+		seteuid(uid);
+		setegid(uid);
+
+		// Open file for writing
+		FILE *fr = fopen(fr_name, "w");
+
+		// Check file opened successfully
+		if(fr == NULL) {
+		    send_display_error("File cannot be opened on server\n", "File upload failed. File could not be stored on server\n", client_socket);
+		    printf("\nRemoving lock\n");
+            pthread_mutex_unlock(&lock);
+
+		    return NULL;
+		} 
+
+		// Free memory no longer needed
+		free(fr_name);
+
+		// Receive file data from the client
+		while(true) {
+		    int READSIZE = recv(client_socket, message, MESSAGE_SIZE, 0);
+
+		    // Check data received correctly
+		    if(READSIZE == 0) {
+		        break;
+		    } else if(READSIZE == SOCKET_ERROR) {
+		        send_display_error("Error reading data", "File upload failed. Error reading data\n", client_socket);
+		        fclose(fr);
+		        printf("\nRemoving lock\n");
+            	pthread_mutex_unlock(&lock);
+
+		        return NULL;
+		    }
+
+		    // Store data in file and check if stored correctly
+		    if((fprintf(fr, "%s", message)) < 0) {
+		        send_display_error("Error writing to file", "File upload failed. Error creating file on server\n", client_socket);
+		        fclose(fr);
+		        printf("\nRemoving lock\n");
+            	pthread_mutex_unlock(&lock);
+		        
+		        return NULL;
+		    }
+
+		    // Close file and update user on success
+		    fclose(fr);
+		    write(client_socket, "File uploaded successfully\n", strlen("File uploaded successfully\n"));
+		    bzero(message, MESSAGE_SIZE);
+
+		    return 0;
+		}
+        
+        // unlock mutex
+	    pthread_mutex_unlock(&lock);
+	    puts("\nData written successfully\nClosing connection to client\n");
+	    
     } else {
         // Wait for child process to complete
     	wait(NULL);
+
+    	// Close client connection
+	    close(client_socket);
     }
-
-    // unlock mutex
-    pthread_mutex_unlock(&lock);
-
-    // Close client connection
-    puts("\nData written successfully\nClosing connection to client");
-    close(client_socket);
 
     return NULL;
 }
 
 /**
  * Function that displays an error on the server and writes a message to the user
- * informing them the file upload has failed
+ * informing them the file upload has failed.
  * Function also closes the client socket
  */
 void send_display_error(char* err, char* data, int cs) {
     perror(err);
 	write(cs, data, strlen(data));
 	close(cs);
-}
-
-int write_server_file(char* username, char* fr_name, char* message, int cs) {
-    struct passwd* pw;
-
-    // Check if details were retrieved successfully
-    if((pw = getpwnam(username)) == NULL) {
-        send_display_error("Failed to retrieve user details", "Failed to retrieve user details\nFile upload failed\n", cs);
-
-        return ERROR;
-    }
-
-    // Get groups user belongs to
-    int ngroups = 50;
-
-    // Retrieve user groups
-    gid_t *supp_groups;
-    gid_t *groups;
-    groups = (gid_t*) malloc(ngroups * sizeof(gid_t));
-    supp_groups = (gid_t*) malloc(ngroups * sizeof(gid_t));
-
-    // Retrieve UID of user
-    uid_t uid = pw->pw_uid;
-
-    // Get groups user is a part of and check they were retrieved correctly
-    if(getgrouplist(pw->pw_name, uid, groups, &ngroups) == -1) {
-        send_display_error("ngroups is too small", "Failed to retrieve user groups.\nFile upload failed\n", cs);
-
-        return ERROR;
-    }
-
-    // Get all groups associated with user
-    for(int j = 0; j < ngroups; j++) {
-        supp_groups[j] = groups[j];
-    }
-    
-    // Set gid, euid, and egid
-    gid_t gid = pw->pw_gid;
-    uid_t euid = uid;
-    gid_t egid = gid;
-
-    printf("Creating file on behalf of %s\n", username);
-    printf("UID: %d\n", uid);
-    printf("GID: %d\n", gid);
-
-    // Change from root to user
-    setgroups(ngroups, supp_groups);
-    setreuid(uid, uid);
-    setregid(uid, gid);
-    seteuid(uid);
-    setegid(uid);
-
-    // Open file for writing
-    FILE *fr = fopen(fr_name, "w");
-
-    // Check file opened successfully
-    if(fr == NULL) {
-        send_display_error("File cannot be opened on server\n", "File upload failed. File could not be stored on server\n", cs);
-
-        return ERROR;
-    } 
-
-    // Free memory no longer needed
-    free(fr_name);
-
-    // Receive file data from the client
-    while(true) {
-        int READSIZE = recv(cs, message, MESSAGE_SIZE, 0);
-
-        // Check data received correctly
-        if(READSIZE == 0) {
-            break;
-        } else if(READSIZE == SOCKET_ERROR) {
-            send_display_error("Error reading data", "File upload failed. Error reading data\n", cs);
-            fclose(fr);
-
-            return ERROR;
-        }
-
-        // Store data in file and check if stored correctly
-        if((fprintf(fr, "%s", message)) < 0) {
-            send_display_error("Error writing to file", "File upload failed. Error creating file on server\n", cs);
-            fclose(fr);
-            
-            return ERROR;
-        }
-
-        // Close file and update user on success
-        fclose(fr);
-        write(cs, "File uploaded successfully\n", strlen("File uploaded successfully\n"));
-        bzero(message, MESSAGE_SIZE);
-
-        return 0;
 }

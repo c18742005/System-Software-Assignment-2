@@ -11,7 +11,7 @@
 #define SOCKET_ERROR -1
 #define ERROR 1
 #define MESSAGE_SIZE 1024
-#define PORT 8081
+#define PORT 8888
 
 // Function declarations
 void send_username();
@@ -22,9 +22,14 @@ void send_data(char* data);
 int SID; 
 char clientMessage[MESSAGE_SIZE]; // Holds file data to be sent
 
+/** 
+ * Main driver function of the client
+ * Creates a socket and connects to the server
+ * Calls helper functions to send data to the server
+ */
 int main(int argc, char* argv[]) {
     // Declare variables
-    char* file_path = "/Users/steven/Documents/Year-4/Systems-Software/Assignment2/Upload/";
+    char* file_path = "/var/www/html/Assignment2/upload/";
     char* file_name = argv[1];
     char* save_path = argv[2];
     struct sockaddr_in server;
@@ -64,6 +69,7 @@ int main(int argc, char* argv[]) {
 
     puts("Successfully connected to server");
 
+    // Send username, file to upload and location to upload to server
     send_username();
     send_data(file_name);
     send_data(save_path);
@@ -73,12 +79,13 @@ int main(int argc, char* argv[]) {
     strcpy(fs_name, file_path);
     strcat(fs_name, file_name);
 
+    // Send file data to the server
     printf("Sending %s to the %s directory on the server...\n", file_name, save_path);
     send_filedata(fs_name);
 
     puts("File sent to server successfully");
 
-    // Receive reply from server
+    // Receive outcome reply from server
     bzero(serverMessage, MESSAGE_SIZE);
 
     // Receive data from server and check if received without error
@@ -101,15 +108,17 @@ int main(int argc, char* argv[]) {
 void send_username() {
     struct passwd* pw;
 
-    // Check for error
+    // Check for error in retrieving user details
     if((pw = getpwuid( getuid())) == NULL) {
         puts("ERROR: Failed to retrieve username");
 
        exit(ERROR);
     }
 
+    // store username
     char* username = pw->pw_name;
 
+    // send username to server
     send_data(username);
 
     return;
